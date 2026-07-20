@@ -63,6 +63,7 @@ list(APPEND ep
     libbs2b
     openssl
     nghttp2
+    curl
     libssh
     libsrt
     libarchive
@@ -94,7 +95,6 @@ list(APPEND ep
     mpv
     mpv-release
     mpv-packaging
-    curl
     flac
     opusfile
     libopusenc
