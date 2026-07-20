@@ -7,6 +7,11 @@ ExternalProject_Add(nghttp2
     GIT_TAG v1.57.0
     SOURCE_DIR ${SOURCE_LOCATION}
     GIT_CLONE_FLAGS "--filter=tree:0"
+    # nghttp2 v1.57.0 的 cmake_minimum_required(VERSION 3.0) 在 CMake 4.0+ 报错
+    # （Compatibility with CMake < 3.5 has been removed）。打补丁提高到 3.5。
+    PATCH_COMMAND sed -i
+        -e "s/cmake_minimum_required(VERSION [0-9]\\.[0-9]\\(\\.[0-9]\\)\\?)/cmake_minimum_required(VERSION 3.5)/"
+        <SOURCE_DIR>/CMakeLists.txt
     UPDATE_COMMAND ""
     CONFIGURE_COMMAND ${EXEC} CONF=1 cmake -H<SOURCE_DIR> -B<BINARY_DIR>
         -G Ninja
