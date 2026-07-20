@@ -137,6 +137,23 @@ jobs:
       - name: Collect logs on failure
         if: ${{ always() }}
         run: |
+          # 打印所有 configure/build 失败的 log 到主日志（便于在线诊断）
+          for f in $(find mpv-winbuild-cmake/build${{ matrix.bit }} -type f -name "*-configure.log" -o -name "*-configure-.log" 2>/dev/null); do
+            if grep -qE "FAILED|Error|error:" "$f" 2>/dev/null || true; then
+              echo "=================================================="
+              echo "=== $f ==="
+              echo "=================================================="
+              tail -n 80 "$f" || true
+            fi
+          done
+          for f in $(find mpv-winbuild-cmake/build${{ matrix.bit }} -type f -name "*-build.log" 2>/dev/null); do
+            if grep -qE "FAILED|Error|error:" "$f" 2>/dev/null; then
+              echo "=================================================="
+              echo "=== $f (last 80 lines) ==="
+              echo "=================================================="
+              tail -n 80 "$f" || true
+            fi
+          done
           7z a logs.7z $(find mpv-winbuild-cmake/build${{ matrix.bit }} -type f -iname "*-*.log" -or -wholename "*/ffbuild/config.log") 2>/dev/null || true
 
       - name: Upload logs
