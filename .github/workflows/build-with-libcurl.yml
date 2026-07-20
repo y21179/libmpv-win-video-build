@@ -1,0 +1,243 @@
+name: Build libmpv with libcurl/HTTP2
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_target:
+        description: "Build target arch"
+        required: false
+        default: "64-v3"
+        type: choice
+        options:
+          - 64
+          - 64-v3
+          - aarch64
+      publish_release:
+        description: "Publish a release with libmpv-2.dll"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  build:
+    name: Build libmpv (libcurl)
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/archlinux/archlinux:base-devel
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        bit: ["64-v3"]
+    steps:
+      - name: Install Dependencies
+        run: |
+          sudo echo -e "[multilib]\nInclude = /etc/pacman.d/mirrorlist" | sudo tee -a /etc/pacman.conf >/dev/null
+          sudo pacman-key --init
+          sudo pacman-key --populate archlinux
+          sudo pacman -Syu --noconfirm
+          sudo pacman -S --noconfirm --needed git ninja cmake meson clang lld libc++ unzip ragel yasm nasm gperf rst2pdf lib32-gcc-libs lib32-glib2 python-cairo curl wget mimalloc ccache python-pip 7zip shaderc
+          sudo python -m pip install --break-system-packages roman
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global pull.rebase true
+          git config --global rebase.autoStash true
+          git config --global fetch.prune true
+
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Checkout shinchiro/mpv-winbuild-cmake
+        uses: actions/checkout@v4
+        with:
+          repository: shinchiro/mpv-winbuild-cmake
+          path: mpv-winbuild-cmake
+          fetch-depth: 0
+
+      - name: Apply overlays (inject libcurl + nghttp2)
+        run: |
+          # 覆盖 packages 里的文件，启用 libcurl + nghttp2 + HTTP/2
+          cp -v overlays/packages/nghttp2.cmake   mpv-winbuild-cmake/packages/
+          cp -v overlays/packages/curl.cmake      mpv-winbuild-cmake/packages/
+          cp -v overlays/packages/ffmpeg.cmake    mpv-winbuild-cmake/packages/
+          cp -v overlays/packages/CMakeLists.txt  mpv-winbuild-cmake/packages/
+          # 移除 ccache_conf.in 引用（避免容器环境差异导致失败）
+          sed -i '/ccache_conf.in/d'  mpv-winbuild-cmake/CMakeLists.txt
+          sed -i '/ccache/d'          mpv-winbuild-cmake/exec.in
+          # 校验修改生效
+          echo "=== CMakeLists.txt nghttp2 行 ==="
+          grep -n 'nghttp2' mpv-winbuild-cmake/packages/CMakeLists.txt
+          echo "=== ffmpeg.cmake libcurl 行 ==="
+          grep -n 'libcurl\|curl' mpv-winbuild-cmake/packages/ffmpeg.cmake
+          echo "=== curl.cmake nghttp2 行 ==="
+          grep -n 'nghttp2\|openssl\|http2' mpv-winbuild-cmake/packages/curl.cmake
+
+      - name: Prepare environment
+        run: |
+          echo "short_time=$(date "+%Y-%m-%d")" >> $GITHUB_ENV
+          echo "cache_suffix=$(date "+%Y-%m-%d")-${{ github.run_id }}-${{ github.run_attempt }}" >> $GITHUB_ENV
+
+      - name: Restore clang sysroot cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/mpv-winbuild-cmake/clang_root
+          key: ${{ matrix.bit }}-clang_root-libcurl-${{ env.cache_suffix }}
+          restore-keys: |
+            ${{ matrix.bit }}-clang_root-libcurl-
+
+      - name: Restore Rust Cache
+        uses: actions/cache/restore@v4
+        id: cache_rust
+        with:
+          path: ${{ github.workspace }}/mpv-winbuild-cmake/install_rustup
+          key: rust-libcurl-${{ env.cache_suffix }}
+          restore-keys: |
+            rust-libcurl-
+
+      - name: Restore Source Cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/mpv-winbuild-cmake/src_packages
+          key: source-libcurl-${{ env.cache_suffix }}
+          restore-keys: |
+            source-libcurl-
+
+      - name: Restore Build Cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/mpv-winbuild-cmake/build${{ matrix.bit }}
+          key: build-libcurl-${{ matrix.bit }}-${{ env.cache_suffix }}
+          restore-keys: |
+            build-libcurl-${{ matrix.bit }}-
+
+      - name: Set up ccache
+        uses: Chocobo1/setup-ccache-action@v1
+        with:
+          update_packager_index: false
+          install_ccache: false
+          store_cache: true
+          override_cache_key: ccache-libcurl-build${{ matrix.bit }}
+          ccache_options: |
+            cache_dir=${{ github.workspace }}/.ccache
+            max_size=500M
+            sloppiness=locale,time_macros
+            compiler_check=none
+
+      - name: Build mpv
+        shell: bash
+        run: |
+          chmod +x build.sh
+          cd mpv-winbuild-cmake
+          bash ../build.sh -t '${{ matrix.bit }}' -c 'clang' -s 'true'
+
+      - name: Collect logs on failure
+        if: ${{ always() }}
+        run: |
+          7z a logs.7z $(find mpv-winbuild-cmake/build${{ matrix.bit }} -type f -iname "*-*.log" -or -wholename "*/ffbuild/config.log") 2>/dev/null || true
+
+      - name: Upload logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.bit }}_logs
+          path: logs.7z
+          if-no-files-found: ignore
+
+      - name: Locate libmpv-2.dll
+        id: locate_dll
+        if: ${{ success() }}
+        shell: bash
+        run: |
+          set -e
+          # 构建产物在 release/mpv-x86_64-v3-* 路径下，先 7z 解包再取 dll
+          ls -la release/ || true
+          ARTIFACT=$(ls release/mpv-x86_64-v3-*.7z 2>/dev/null | head -n1 || true)
+          echo "Found artifact: $ARTIFACT"
+          if [ -z "$ARTIFACT" ]; then
+            # 备用：直接从 build 目录取
+            DLL=$(find mpv-winbuild-cmake/build${{ matrix.bit }} -name 'libmpv-2.dll' -path '*/mpv/*' | head -n1)
+          else
+            mkdir -p extract
+            7z x -y -oextract "$ARTIFACT"
+            DLL=$(find extract -name 'libmpv-2.dll' | head -n1)
+          fi
+          echo "Found dll: $DLL"
+          if [ -z "$DLL" ]; then
+            echo "ERROR: libmpv-2.dll not found"
+            exit 1
+          fi
+          # 复制到根目录方便后续步骤引用
+          cp -v "$DLL" libmpv-2.dll
+          # 同时复制整个 dev 包（含 headers + .dll.a）
+          DEV_DIR=$(dirname "$DLL")
+          echo "dll_dir=$DEV_DIR" >> $GITHUB_OUTPUT
+
+      - name: Verify libcurl compiled in
+        if: ${{ success() }}
+        shell: bash
+        run: |
+          # 用 strings + grep 在 dll 里检查 libcurl/nghttp2 关键字
+          strings libmpv-2.dll | grep -iE 'libcurl|nghttp2|HTTP/2' | head -20 || true
+          echo "---"
+          strings libmpv-2.dll | grep -c 'nghttp2' || true
+
+      - name: Upload libmpv-2.dll artifact
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: libmpv-2-${{ matrix.bit }}-libcurl
+          path: |
+            libmpv-2.dll
+            ${{ steps.locate_dll.outputs.dll_dir }}/
+
+      - name: Save Build Cache
+        if: ${{ success() }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/mpv-winbuild-cmake/build${{ matrix.bit }}
+          key: build-libcurl-${{ matrix.bit }}-${{ env.cache_suffix }}
+
+      - name: Save clang sysroot cache
+        if: ${{ success() }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/mpv-winbuild-cmake/clang_root
+          key: ${{ matrix.bit }}-clang_root-libcurl-${{ env.cache_suffix }}
+
+      - name: Save Source Cache
+        if: ${{ success() }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/mpv-winbuild-cmake/src_packages
+          key: source-libcurl-${{ env.cache_suffix }}
+
+      - name: Save Rust Cache
+        if: ${{ success() }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/mpv-winbuild-cmake/install_rustup
+          key: rust-libcurl-${{ env.cache_suffix }}
+
+      - name: Create release
+        if: ${{ success() && inputs.publish_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: libcurl-${{ env.short_time }}-${{ github.run_id }}
+          name: libmpv with libcurl/HTTP2 ${{ env.short_time }}
+          body: |
+            自构建 libmpv，启用 `--enable-libcurl` + nghttp2，让 ffmpeg 走 HTTP/2 多路复用。
+
+            - 架构: x86_64-v3
+            - 编译器: clang
+            - TLS 后端: openssl
+            - HTTP/2: libcurl + nghttp2
+            - 构建来源: shinchiro/mpv-winbuild-cmake + 本仓库 overlays/
+
+            用法: 替换 media_kit 默认的 `libmpv-2.dll` 即可。
+          files: |
+            libmpv-2.dll
+            release/mpv-x86_64-v3-*.7z
