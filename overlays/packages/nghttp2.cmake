@@ -19,7 +19,9 @@ ExternalProject_Add(nghttp2
         -DENABLE_HTTP3=OFF
     BUILD_COMMAND ${EXEC} ninja -C <BINARY_DIR>
     INSTALL_COMMAND ${EXEC} ninja -C <BINARY_DIR> install
-    LOG_DOWNLOAD 1 LOG_UPDATE 1 LOG_CONFIGURE 1 LOG_BUILD 1 LOG_INSTALL 1
+    LOG_DOWNLOAD 1 LOG_UPDATE 1 LOG_INSTALL 1
+    # 故意不设 LOG_CONFIGURE/LOG_BUILD：让 configure/build 输出直接显示在主日志，
+    # 便于在线诊断 configure 失败的具体原因（CMake Error / FATAL_ERROR 等）。
 )
 
 force_rebuild_git(nghttp2)

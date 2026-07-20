@@ -136,23 +136,24 @@ jobs:
 
       - name: Collect logs on failure
         if: ${{ always() }}
+        shell: bash
         run: |
-          # 打印所有 configure/build 失败的 log 到主日志（便于在线诊断）
-          for f in $(find mpv-winbuild-cmake/build${{ matrix.bit }} -type f -name "*-configure.log" -o -name "*-configure-.log" 2>/dev/null); do
-            if grep -qE "FAILED|Error|error:" "$f" 2>/dev/null || true; then
-              echo "=================================================="
-              echo "=== $f ==="
-              echo "=================================================="
-              tail -n 80 "$f" || true
-            fi
+          set +e
+          # 打印所有 configure/build log 到主日志（便于在线诊断）
+          shopt -s nullglob globstar
+          for f in mpv-winbuild-cmake/build${{ matrix.bit }}/packages/*-prefix/src/*-stamp/*-configure*.log \
+                   mpv-winbuild-cmake/build${{ matrix.bit }}/packages/*-prefix/src/*-stamp/*-build*.log; do
+            echo "=================================================="
+            echo "=== $f (last 100 lines) ==="
+            echo "=================================================="
+            tail -n 100 "$f"
           done
-          for f in $(find mpv-winbuild-cmake/build${{ matrix.bit }} -type f -name "*-build.log" 2>/dev/null); do
-            if grep -qE "FAILED|Error|error:" "$f" 2>/dev/null; then
-              echo "=================================================="
-              echo "=== $f (last 80 lines) ==="
-              echo "=================================================="
-              tail -n 80 "$f" || true
-            fi
+          # ffmpeg config.log（如果 ffmpeg 走到了 configure）
+          for f in mpv-winbuild-cmake/build${{ matrix.bit }}/packages/ffmpeg-prefix/src/ffmpeg/ffbuild/config.log; do
+            echo "=================================================="
+            echo "=== $f (last 100 lines) ==="
+            echo "=================================================="
+            tail -n 100 "$f"
           done
           7z a logs.7z $(find mpv-winbuild-cmake/build${{ matrix.bit }} -type f -iname "*-*.log" -or -wholename "*/ffbuild/config.log") 2>/dev/null || true
 
