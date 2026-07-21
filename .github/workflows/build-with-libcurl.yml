@@ -1,6 +1,12 @@
 name: Build libmpv with libcurl/HTTP2
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'overlays/**'
+      - 'build.sh'
+      - '.github/workflows/build-with-libcurl.yml'
   workflow_dispatch:
     inputs:
       build_target:
@@ -28,7 +34,6 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/archlinux/archlinux:base-devel
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -240,12 +245,12 @@ jobs:
           path: ${{ github.workspace }}/mpv-winbuild-cmake/install_rustup
           key: rust-libcurl-${{ env.cache_suffix }}
 
-      - name: Create release
-        if: ${{ success() && inputs.publish_release }}
+      - name: Create release (always, upload logs even on failure)
+        if: ${{ always() }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: libcurl-${{ env.short_time }}-${{ github.run_id }}
-          name: libmpv with libcurl/HTTP2 ${{ env.short_time }}
+          name: libmpv with libcurl/HTTP2 ${{ env.short_time }} (${{ job.status }})
           body: |
             自构建 libmpv，启用 `--enable-libcurl` + nghttp2，让 ffmpeg 走 HTTP/2 多路复用。
 
@@ -254,8 +259,12 @@ jobs:
             - TLS 后端: openssl
             - HTTP/2: libcurl + nghttp2
             - 构建来源: shinchiro/mpv-winbuild-cmake + 本仓库 overlays/
+            - 构建状态: ${{ job.status }}
+            - Commit: ${{ github.sha }}
 
             用法: 替换 media_kit 默认的 `libmpv-2.dll` 即可。
           files: |
             libmpv-2.dll
             release/mpv-x86_64-v3-*.7z
+            logs.7z
+          prerelease: ${{ job.status != 'success' }}
